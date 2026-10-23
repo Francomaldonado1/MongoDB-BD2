@@ -9,6 +9,17 @@ if (typeof mostrar === "undefined") load(__dirname + "/lib.js");
 seccion("INICIO");
 
 // -----------------------------------------------------------------------------
+// 1.0 EL INICIO COMPLETO CON UNA SOLA LECTURA
+// La colección home guarda la pantalla ya armada para cada usuario (db/05_home.js):
+// hero, seguir viendo, top 10, recién agregadas, recomendadas, series y géneros.
+// Es lo que usa la aplicación. Las consultas 1.1 a 1.6 de más abajo son las que
+// arman cada parte: se ejecutan cuando se genera home, no cuando entra un usuario.
+// -----------------------------------------------------------------------------
+mostrar("1.0 Inicio completo: db.home.findOne({ _id: user_id })", () =>
+  db.home.findOne({ _id: IDS.cinefan }, { hero: 1, continue_watching: 1, top10: 1, because_you_like: 1 })
+, { ancho: 100 });
+
+// -----------------------------------------------------------------------------
 // 1.1 Título destacado (hero)
 // Un solo documento trae todo lo que muestra el hero.
 // -----------------------------------------------------------------------------

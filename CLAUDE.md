@@ -49,7 +49,7 @@ La teoría vista (clases en `../Teoria_mongo/*.ppsx`) cubre:
 
 ## Modelo (resumen)
 
-Base **`fotograma`**, con 6 colecciones:
+Base **`fotograma`**, con 7 colecciones (6 de datos y `home`):
 
 - **`media`:** películas y series en una misma colección (patrón polimórfico, campo `type`).
   - Las películas tienen `runtime_min`; las series tienen `seasons` embebido.
@@ -60,6 +60,7 @@ Base **`fotograma`**, con 6 colecciones:
 - **`people`:** actores y directores. Relación N:M con `media` mediante índices multikey.
 - **`users`:** `subscription` y `payment_methods` embebidos; `watchlist` con referencias a `media`. Lo "visto" se obtiene de `views`.
 - **`reviews`:** colección propia (1:N sin límite) con una copia de `username` y `avatar`. Hay un índice único en `{ media_id, user_id }`.
+- **`home`:** pantalla de Inicio precalculada (patrón computado llevado a una pantalla entera). Un documento por usuario (`_id` = `user_id`) con `hero`, `continue_watching`, `top10`, `recent`, `because_you_like`, `series` y `genres`; el Inicio se resuelve con `db.home.findOne({ _id: user_id })`. Se arma con `db/05_home.js` (después de los índices) y las consultas que lo arman están en `consultas/1_inicio.js`. Es una copia: puede quedar atrasada hasta la próxima corrida. `rendimiento/home.js` compara el Inicio con y sin `home`.
 - **`views`:** colección común (no serie temporal; se simplificó por tiempo): `{ user_id, media_id, started_at, episode?, minutes, completed }`. Índices `views_por_usuario { user_id: 1, started_at: -1 }` y `views_por_fecha { started_at: -1 }`.
 
 ## Base de datos local

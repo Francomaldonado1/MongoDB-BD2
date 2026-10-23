@@ -12,6 +12,7 @@ El modelo se diseñó **a partir de las pantallas** (ver [`interfaces/`](interfa
 | `users` | Cuentas de usuario | miles | moderado |
 | `reviews` | Reseñas de usuarios a títulos | cientos de miles | mucho |
 | `views` | Sesiones de reproducción | millones | muchísimo |
+| `home` | La pantalla de Inicio ya armada, un documento por usuario | una por usuario | se regenera |
 
 ```mermaid
 flowchart LR
@@ -30,6 +31,10 @@ flowchart LR
     reviews -- "user_id + user {username, avatar}" --> users
     views -- "media_id" --> media
     views -- "user_id" --> users
+    home["home<br/>(1 documento por usuario)"]
+    home -. "se arma desde" .-> media
+    home -. "se arma desde" .-> views
+    home -. "_id = user_id" .-> users
 ```
 
 ## Criterio general: ¿embeber o referenciar?
@@ -240,6 +245,50 @@ Películas y series en una sola colección (**patrón polimórfico**): comparten
 
 ---
 
+## 7. `home`
+
+El Inicio es la pantalla más visitada y la que tiene que cargar más rápido. Armarla con las colecciones de arriba exige **9 consultas** (usuario, hero, géneros, top 10, seguir viendo, sus títulos, recién agregadas, recomendadas y series), a 4 colecciones. `home` guarda la pantalla **ya armada**: el Inicio se resuelve con **una sola lectura**.
+
+```js
+db.home.findOne({ _id: userId })
+```
+
+```js
+{
+  _id: ObjectId("665f0c…01"),                  // = users._id: un documento de home por usuario
+  generated_at: ISODate("2026-10-23T…"),       // cuándo se armó
+  user: { username: "CineFan88", avatar: "…", favorite_genre_ids: ["ciencia-ficcion", …] },
+
+  hero: { media_id, title, type, poster, plot, release_year, rating_avg, genre_ids: [ … ], backdrop,
+          runtime_min /* película */ o seasons_count /* serie */ },
+
+  continue_watching: [                          // lo que este usuario dejó a medias (máx. 10)
+    { media_id, title, type, poster, minutes: 32, progress: 55, episode: { season: 1, number: 4, title: "…" } }
+  ],
+  top10: [ { media_id, title, type, poster, release_year, rating_avg, views: 4210 }, … ],   // igual para todos
+  recent: [ { media_id, title, type, poster, release_year, rating_avg }, … ],               // 12 cards
+  because_you_like: { genre_id: "ciencia-ficcion", genre_name: "Ciencia Ficción", items: [ … 12 cards ] },
+  series: [ … 12 cards ],
+  genres: [ { _id: "accion", name: "Acción", color: "#ff6a3d" }, … ]                        // 12 géneros
+}
+```
+
+**Decisiones**
+- **Una sola lectura:** todo lo que muestra el Inicio está en un documento, así que la pantalla no depende de cuántas colecciones ni cuántas filas haya detrás. Es la idea central de un modelo documental: **el documento tiene la forma de la pantalla**, no la forma "normalizada" de los datos.
+- **Patrón computado:** igual que `media.rating`, se calcula al escribir y se lee muchas veces. Acá el resultado no es un número sino una pantalla completa.
+- **Cada card es una referencia extendida:** `media_id` más una copia de lo que se muestra (título, póster, año, rating). Es un subconjunto de `media`, no el documento entero (no incluye reparto, ni temporadas, ni sinopsis).
+- **Un documento por usuario:** `seguir viendo` y `porque te gusta` son personales. Las partes iguales para todos (top 10, recientes, series, géneros) se calculan **una vez** y se copian en cada documento. Se paga espacio duplicado (≈ 10 KB por usuario) a cambio de que la lectura no necesite combinar dos documentos.
+- **`_id` = `user_id`:** la lectura es por clave primaria, el índice más rápido que existe. No necesita ningún índice extra.
+- **Se arma con las mismas consultas de antes** (`consultas/1_inicio.js` 1.1 a 1.6), ejecutadas por `db/05_home.js` y no por cada visita.
+
+**Costo asumido**
+- **Datos atrasados:** `home` es una copia, y puede quedar desactualizada hasta que se regenere. Para el Top 10 de la semana alcanza con regenerarla cada tanto. Para `continue_watching` conviene actualizar `home` del usuario cuando registra una reproducción. En este proyecto se regenera con `mongosh db/05_home.js`.
+- **Más espacio y más escritura:** a cambio de lecturas muy rápidas. Es el mismo intercambio de todo el modelo: se lee mucho más de lo que se escribe.
+
+**Índices previstos:** ninguno adicional (se lee por `_id`).
+
+---
+
 ## Relaciones
 
 | Relación | Cardinalidad | Cómo se resuelve |
@@ -259,13 +308,14 @@ Películas y series en una sola colección (**patrón polimórfico**): comparten
 |---|---|---|
 | **Polimórfico** | `media` (`type`: movie / series) | películas y series se listan juntas |
 | **Referencia extendida** | `media.cast`, `media.directors`, `reviews.user` | evitar `$lookup` en las pantallas más usadas |
-| **Computado** | `media.rating` | se lee mucho y cambia poco |
+| **Computado** | `media.rating`, `home` | se lee mucho y cambia poco |
+| **Documento con la forma de la pantalla** | `home` | una sola lectura trae todo el Inicio, sin `$lookup` ni consultas múltiples |
 
 ## Pantalla → consultas
 
 | Pantalla | Colecciones | Consultas principales |
 |---|---|---|
-| **Inicio** | `media`, `views`, `genres`, `users` | `findOne({ is_featured: true })` · top 10 = `aggregate` sobre `views` · `find().sort({ created_at: -1 })` · `find({ genre_ids })` · `find({ type: "series" })` |
+| **Inicio** | `home` | **una sola consulta:** `home.findOne({ _id: user_id })`. Se arma desde `media`, `views`, `genres` y `users` con: `findOne({ is_featured: true })` · top 10 = `aggregate` sobre `views` · `find().sort({ created_at: -1 })` · `find({ genre_ids })` · `find({ type: "series" })` |
 | **Detalle** | `media`, `reviews`, `views`, `users` | un `findOne` trae casi todo · `reviews.find({ media_id }).sort(…)` · `$push` / `$pull` en `watchlist` |
 | **Persona** | `people`, `media` | `people.findOne` · `media.find({ "cast.person_id" })` · `media.find({ "directors.person_id" })` · `$project` con `$cond` + `$group` |
 | **Género / Explorar** | `genres`, `media` | `genres.findOne({ _id: slug })` · `media.find({ genre_ids, type }).sort(…)` |
@@ -280,4 +330,7 @@ Películas y series en una sola colección (**patrón polimórfico**): comparten
 - **¿Por qué los géneros no tienen `ObjectId`?** El slug es estable y legible. Permite filtrar sin `$lookup` y usarlo en URLs, y renombrar sigue siendo modificar un solo documento.
 - **¿Por qué las reseñas no están dentro de la película?** Porque son ilimitadas y se consultan también por usuario. Embebidas, una película popular superaría los 16 MB.
 - **¿Dónde quedó la lista de vistos?** Se deriva de `views`. Guardarla en `users` sería duplicar información en un array que crece sin límite.
+- **¿Por qué existe `home` si todos esos datos ya están en otras colecciones?** Porque el Inicio es la pantalla más visitada y tiene que ser la más rápida. Armarla desde cero son 9 consultas a 4 colecciones en cada visita. En un modelo documental el documento se diseña con la forma de lo que la aplicación lee: `home` guarda la pantalla ya armada y se lee con un solo `findOne`. Es el patrón computado de `media.rating`, llevado a toda la pantalla.
+- **¿No es un dato duplicado que puede quedar desactualizado?** Sí, y es un costo asumido. A cambio de espacio extra y de regenerar el documento, la lectura (que es lo que hace cada usuario cada vez que entra) es una sola. Las partes que cambian poco (top 10, recientes) se regeneran cada tanto, y `continue_watching` se actualiza al registrar una reproducción.
+- **¿Por qué un documento por usuario y no uno solo para todos?** Porque "Seguir viendo" y "Porque te gusta" son personales. Con un único documento global habría que hacer una segunda lectura por usuario. Duplicar las partes comunes cuesta espacio, pero deja la lectura en una sola consulta.
 - **¿Por qué `rating.avg` está guardado si se puede calcular?** Se muestra en cada card del catálogo. Calcularlo en cada lectura significaría agrupar miles de reseñas por cada título mostrado.

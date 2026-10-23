@@ -31,135 +31,153 @@ function viewProgress(v, m) {
 
 /* ======================================================================
    INICIO
+   El Inicio se resuelve con UNA sola lectura: db.home.findOne({ _id: user_id }).
+   La colección home guarda la pantalla ya armada para cada usuario
+   (db/05_home.js). Esta función arma ese mismo documento a partir de los datos
+   de muestra, y la pantalla se dibuja SOLO con lo que trae ese documento.
    ====================================================================== */
-function renderHome(app) {
+function armarHome(user) {
+  const card = (m) => ({
+    media_id: m._id, title: m.title, type: m.type, poster: m.poster, release_year: m.release_year, rating_avg: m.rating.avg,
+    ...(m.type === "series" ? { seasons_count: m.seasons.length } : {}),
+  });
   const f = DB.media.find((m) => m.is_featured);
-  const cont = continueWatching(ME._id);
-  const fav = GENRES[ME.favorite_genre_ids[0]];
-  const recent = [...DB.media].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 12);
-  const byFav = DB.media.filter((m) => m.genre_ids.includes(fav._id)).sort((a, b) => b.rating.avg - a.rating.avg);
-  const series = DB.media.filter((m) => m.type === "series").sort((a, b) => b.rating.avg - a.rating.avg);
+  const fav = user.favorite_genre_ids[0];
+  const byRating = (a, b) => b.rating.avg - a.rating.avg;
+  return {
+    _id: user._id,
+    generated_at: NOW.toISOString().slice(0, 19) + "Z",
+    user: { username: user.username, avatar: user.avatar, favorite_genre_ids: user.favorite_genre_ids },
+    hero: { ...card(f), plot: f.plot, genre_ids: f.genre_ids, backdrop: f.backdrop, ...(f.type === "movie" ? { runtime_min: f.runtime_min } : {}) },
+    continue_watching: continueWatching(user._id).map((v) => {
+      const m = MEDIA[v.media_id];
+      const { media_id, title, type, poster } = card(m);
+      return { media_id, title, type, poster, minutes: v.minutes, progress: viewProgress(v, m),
+        ...(v.episode ? { episode: { ...v.episode, title: episodeOf(m, v.episode).title } } : {}) };
+    }),
+    top10: DB.trending_result.map((t) => ({ ...card(MEDIA[t._id]), views: t.views })),
+    recent: [...DB.media].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 12).map(card),
+    because_you_like: { genre_id: fav, genre_name: GENRES[fav].name,
+      items: DB.media.filter((m) => m.genre_ids.includes(fav)).sort(byRating).slice(0, 12).map(card) },
+    series: DB.media.filter((m) => m.type === "series").sort(byRating).slice(0, 12).map(card),
+    genres: [...DB.genres].sort((a, b) => a.name.localeCompare(b.name)).map((g) => ({ _id: g._id, name: g.name, color: g.color })),
+  };
+}
 
-  const aHero = ann({ col: "media", title: "Título destacado (hero)", short: "findOne({ is_featured: true })",
-    q: `db.media.findOne({ is_featured: true })`,
-    why: "Un único documento trae todo lo que muestra el hero: título, sinopsis, año, rating y los slugs de género. No hace falta ninguna consulta adicional.",
-    docs: () => [f] });
-  const aChips = ann({ col: "genres", title: "Nombres de los géneros", short: "find() — se cachea en la app",
-    q: `// media.genre_ids guarda slugs: [ "ciencia-ficcion", "drama", "thriller" ]
-// El nombre visible y el color salen de la colección genres,
-// que es muy chica (una docena de documentos) y se carga una sola vez:
-db.genres.find().sort({ name: 1 })`,
-    why: "Los géneros se referencian por un slug estable que funciona como _id. Para filtrar no hace falta un $lookup, y renombrar un género es modificar un solo documento.",
-    docs: () => f.genre_ids.map((g) => GENRES[g]), docsLabel: "Documentos de genres", maxDocs: 3 });
+function renderHome(app) {
+  // La única lectura de la pantalla
+  const H = armarHome(ME);
+
+  // Las cards de home guardan media_id y una copia de lo que se muestra; este
+  // adaptador les da la forma que esperan los helpers de dibujo (poster, mediaCard…)
+  const asMedia = (c) => ({ _id: c.media_id, title: c.title, type: c.type, release_year: c.release_year, rating: { avg: c.rating_avg } });
+  const chip = (slug) => {
+    const g = H.genres.find((x) => x._id === slug);
+    return `<a class="chip" href="genero.html?id=${g._id}" style="--g:${g.color}">${esc(g.name)}</a>`;
+  };
+  const f = H.hero, fm = asMedia(f);
+  const heroMeta = [f.release_year, f.type === "movie" ? fmtRuntime(f.runtime_min) : `${f.seasons_count} ${f.seasons_count === 1 ? "temporada" : "temporadas"}`];
+  const episodeLabel = (c) => (c.episode ? `T${c.episode.season} · E${c.episode.number} — ${c.episode.title}` : "Película");
+
+  const FIND = `db.home.findOne({ _id: ${oid(ME._id)} })`;
+  const ORIGEN = "Esta sección se armó al generar home (db/05_home.js) con la consulta:";
+  const aHero = ann({ col: "home", title: "Título destacado (hero)", short: "home.findOne({ _id: user_id }) → hero",
+    q: `${FIND}   // campo hero\n\n// ${ORIGEN}\n//   db.media.findOne({ is_featured: true })`,
+    why: "El Inicio completo es UN documento de home. El hero es el campo hero: título, sinopsis, año, rating y los slugs de género, listos para dibujar.",
+    docs: () => [{ hero: H.hero }] });
+  const aChips = ann({ col: "home", title: "Nombres de los géneros", short: "home.findOne({ _id: user_id }) → genres",
+    q: `${FIND}   // campo genres\n\n// ${ORIGEN}\n//   db.genres.find().sort({ name: 1 })`,
+    why: "Los nombres y colores de los géneros viajan dentro del mismo documento: no hace falta consultar genres al abrir la pantalla.",
+    docs: () => [{ genres: H.genres }], maxDocs: 1 });
   const aList = ann({ col: "users", title: "Agregar a Mi lista", short: "updateOne({ watchlist: { $ne } }, { $push })",
     q: `db.users.updateOne(
-  { _id: ${oid(ME._id)}, watchlist: { $ne: ${oid(f._id)} } },
-  { $push: { watchlist: ${oid(f._id)} } }   // $pull para quitarlo
+  { _id: ${oid(ME._id)}, watchlist: { $ne: ${oid(f.media_id)} } },
+  { $push: { watchlist: ${oid(f.media_id)} } }   // $pull para quitarlo
 )`,
-    why: "$push agrega el _id al array de referencias. El filtro { watchlist: { $ne: id } } hace que solo se agregue si todavía no está, así no se duplica.",
+    why: "Esto es una escritura, no parte de la lectura del Inicio. $push agrega el _id al array de referencias. El filtro { watchlist: { $ne: id } } hace que solo se agregue si todavía no está, así no se duplica.",
     docs: () => [{ _id: ME._id, username: ME.username, watchlist: ME.watchlist }] });
+  const aCont = ann({ col: "home", title: "Seguir viendo", short: "home.findOne({ _id: user_id }) → continue_watching",
+    q: `${FIND}   // campo continue_watching\n\n// ${ORIGEN}\n// 1) db.views.find({ user_id, started_at: { $gte: hace30dias } }).sort({ started_at: -1 })\n// 2) se queda con la última sesión de cada título; si no está terminada, entra\n// 3) db.media.find({ _id: { $in: [ … ] } })   // título y póster`,
+    why: "Es la parte personal de home: cambia con cada usuario. Cada item guarda el título, el póster y el progreso ya calculado, así que no hay que consultar views ni media.",
+    docs: () => [{ continue_watching: H.continue_watching }], maxDocs: 1 });
+  const aTop = ann({ col: "home", title: "Top 10 de la semana", short: "home.findOne({ _id: user_id }) → top10",
+    q: `${FIND}   // campo top10\n\n// ${ORIGEN}\ndb.views.aggregate([\n  { $match: { started_at: { $gte: ISODate("${isoDaysAgo(7)}") } } },\n  { $group: { _id: "$media_id", views: { $sum: 1 } } },\n  { $sort: { views: -1 } },\n  { $limit: 10 }\n])`,
+    why: "El ranking es lo más caro de calcular: hay que contar todas las reproducciones de la semana. Con home se calcula una vez, al generar el documento, y no cada vez que alguien abre el Inicio.",
+    docs: () => [{ top10: H.top10 }], maxDocs: 1 });
+  const aRecent = ann({ col: "home", title: "Recién agregadas", short: "home.findOne({ _id: user_id }) → recent",
+    q: `${FIND}   // campo recent\n\n// ${ORIGEN}\n//   db.media.find().sort({ created_at: -1 }).limit(12)`,
+    why: "created_at es la fecha en que el título se agregó al catálogo (no la de estreno). Cada card es una referencia extendida: media_id más una copia de lo que se muestra.",
+    docs: () => [{ recent: H.recent }], maxDocs: 1 });
+  const aFav = ann({ col: "home", title: "Recomendadas por género favorito", short: "home.findOne({ _id: user_id }) → because_you_like",
+    q: `${FIND}   // campo because_you_like\n\n// ${ORIGEN}\n//   db.media.find({ genre_ids: "${H.because_you_like.genre_id}" }).sort({ "rating.avg": -1 }).limit(12)`,
+    why: "El género sale de users.favorite_genre_ids (el primero). Como es personal, vive en el documento de cada usuario; las mejores de ese género se calculan una vez por género y se copian.",
+    docs: () => [{ because_you_like: H.because_you_like }], maxDocs: 1 });
+  const aSeries = ann({ col: "home", title: "Series para maratonear", short: "home.findOne({ _id: user_id }) → series",
+    q: `${FIND}   // campo series\n\n// ${ORIGEN}\n//   db.media.find({ type: "series" }).sort({ "rating.avg": -1 }).limit(12)`,
+    why: "Patrón polimórfico: películas y series conviven en media y se distinguen por type. Acá ya llegan filtradas y con la cantidad de temporadas.",
+    docs: () => [{ series: H.series }], maxDocs: 1 });
+  const aGenres = ann({ col: "home", title: "Explorar por género", short: "home.findOne({ _id: user_id }) → genres",
+    q: `${FIND}   // campo genres\n\n// ${ORIGEN}\n//   db.genres.find().sort({ name: 1 })`,
+    why: "La misma lista de géneros alimenta los chips del hero y esta grilla, sin una consulta aparte.",
+    docs: () => [{ genres: H.genres }], maxDocs: 1 });
 
-  const inList = ME.watchlist.includes(f._id);
+  const inList = ME.watchlist.includes(f.media_id);
   app.innerHTML = `
   <section class="hero" ${aHero.attr}>
-    ${backdrop(f)}
+    ${backdrop(fm)}
     <div class="hero-content">
-      <span class="eyebrow">${typeLabel(f)} destacada · Nuevo en Fotograma</span>
+      <span class="eyebrow">${typeLabel(fm)} destacada · Nuevo en Fotograma</span>
       <h1 class="hero-title">${esc(f.title)}</h1>
-      <div class="meta">${stars(f.rating.avg)}<span class="dot"></span>${mediaMeta(f).join('<span class="dot"></span>')}<span class="badge">${typeLabel(f)}</span></div>
-      <div class="chips" ${aChips.attr}>${f.genre_ids.map(genreChip).join("")}</div>
+      <div class="meta">${stars(f.rating_avg)}<span class="dot"></span>${heroMeta.join('<span class="dot"></span>')}<span class="badge">${typeLabel(fm)}</span></div>
+      <div class="chips" ${aChips.attr}>${f.genre_ids.map(chip).join("")}</div>
       <p class="hero-plot">${esc(f.plot)}</p>
       <div class="actions" ${aList.attr}>
-        <a class="btn btn-primary" href="detalle.html?id=${f._id}">${ICON.play} Reproducir</a>
+        <a class="btn btn-primary" href="detalle.html?id=${f.media_id}">${ICON.play} Reproducir</a>
         <button class="btn btn-ghost" data-toggle-list>${inList ? ICON.check + " En mi lista" : ICON.plus + " Mi lista"}</button>
-        <a class="btn btn-ghost btn-icon" href="detalle.html?id=${f._id}" aria-label="Más información">${ICON.info}</a>
+        <a class="btn btn-ghost btn-icon" href="detalle.html?id=${f.media_id}" aria-label="Más información">${ICON.info}</a>
       </div>
     </div>
   </section>
 
-  ${cont.length ? `
-  <section class="section" ${ann({ col: ["views", "media"], title: "Seguir viendo", short: "find({ user_id, started_at: { $gte } }).sort({ started_at: -1 })",
-    q: `// 1) sesiones del usuario de los últimos 30 días, de la más nueva a la más vieja
-db.views.find({ user_id: ${oid(ME._id)},
-                started_at: { $gte: ISODate("${isoDaysAgo(30)}") } })
-  .sort({ started_at: -1 })
-
-// 2) la aplicación recorre la lista y se queda con la primera sesión
-//    de cada título; si no está terminada, va a "Seguir viendo"
-
-// 3) nombres y pósters de esos títulos
-db.media.find({ _id: { $in: [ /* ids de los títulos */ ] } },
-              { title: 1, poster: 1 })`,
-    why: "Cada documento de views es una sesión de reproducción. La base devuelve las sesiones del usuario ordenadas por fecha (índice views_por_usuario) y la aplicación elige la más reciente de cada título.",
-    docs: () => cont, docsLabel: "Documentos de views (última sesión de cada título)" }).attr}>
+  ${H.continue_watching.length ? `
+  <section class="section" ${aCont.attr}>
     <div class="section-head"><h2 class="section-title">Seguir viendo</h2><span class="section-sub">Continuá donde lo dejaste</span></div>
     <div class="row wide">
-      ${cont.map((v) => { const m = MEDIA[v.media_id]; const a = artVars(m); return `
-        <a class="card continue" href="detalle.html?id=${m._id}">
-          <div class="thumb art" style="${a.style};--x1:70%;--y1:30%" data-motif="${a.motif}" data-font="${a.font}"><div class="poster-title">${esc(m.title)}</div></div>
-          <div class="progress"><span style="width:${viewProgress(v, m)}%"></span></div>
-          <div class="card-info"><div class="card-meta"><span>${esc(viewLabel(v, m))}</span><span>${viewProgress(v, m)}%</span></div></div>
+      ${H.continue_watching.map((c) => { const a = artVars(asMedia(c)); return `
+        <a class="card continue" href="detalle.html?id=${c.media_id}">
+          <div class="thumb art" style="${a.style};--x1:70%;--y1:30%" data-motif="${a.motif}" data-font="${a.font}"><div class="poster-title">${esc(c.title)}</div></div>
+          <div class="progress"><span style="width:${c.progress}%"></span></div>
+          <div class="card-info"><div class="card-meta"><span>${esc(episodeLabel(c))}</span><span>${c.progress}%</span></div></div>
         </a>`; }).join("")}
     </div>
   </section>` : ""}
 
-  <section class="section" ${ann({ col: ["views", "media"], title: "Top 10 de la semana", short: "aggregate: $match started_at → $group $sum → $sort",
-    q: `db.views.aggregate([
-  { $match: { started_at: { $gte: ISODate("${isoDaysAgo(7)}") } } },
-  { $group: { _id: "$media_id", views: { $sum: 1 } } },
-  { $sort: { views: -1 } },
-  { $limit: 10 },
-  { $lookup: { from: "media", localField: "_id",
-               foreignField: "_id", as: "media" } },
-  { $project: { views: 1, "media.title": 1, "media.poster": 1 } }
-])`,
-    why: "El ranking ya no es un número inventado guardado en media: se calcula sumando las reproducciones de los últimos 7 días. El índice views_por_fecha { started_at: -1 } permite leer solo las reproducciones de ese rango.",
-    docs: () => DB.trending_result, docsLabel: "Resultado del $group (antes del $lookup)", maxDocs: 4 }).attr}>
+  <section class="section" ${aTop.attr}>
     <div class="section-head"><h2 class="section-title">Top 10 de la semana</h2><span class="section-sub">Según reproducciones de los últimos 7 días</span></div>
     <div class="row top">
-      ${DB.trending_result.map((t, i) => `
-        <a class="card top-card" href="detalle.html?id=${t._id}"><span class="top-num">${i + 1}</span>${poster(MEDIA[t._id])}</a>`).join("")}
+      ${H.top10.map((t, i) => `
+        <a class="card top-card" href="detalle.html?id=${t.media_id}"><span class="top-num">${i + 1}</span>${poster(asMedia(t))}</a>`).join("")}
     </div>
   </section>
 
-  <section class="section" ${ann({ col: "media", title: "Recién agregadas", short: "find().sort({ created_at: -1 }).limit(12)",
-    q: `db.media.find({}, ${CARD_PROJ})
-  .sort({ created_at: -1 })
-  .limit(12)`,
-    why: "created_at es la fecha en que el título se agregó al catálogo (no la de estreno). Con un índice { created_at: -1 } se resuelve sin ordenar en memoria.",
-    docs: () => recent.slice(0, 1) }).attr}>
+  <section class="section" ${aRecent.attr}>
     <div class="section-head"><h2 class="section-title">Recién agregadas</h2><a class="link-more" href="genero.html?sort=recent">Ver todo</a></div>
-    <div class="row">${recent.map((m) => mediaCard(m)).join("")}</div>
+    <div class="row">${H.recent.map((c) => mediaCard(asMedia(c))).join("")}</div>
   </section>
 
-  <section class="section" ${ann({ col: ["users", "media"], title: "Recomendadas por género favorito", short: `find({ genre_ids: "${fav._id}" }).sort({ "rating.avg": -1 })`,
-    q: `// 1) el género sale de users.favorite_genre_ids (ya cargado en la sesión)
-// 2) se buscan los mejor valorados de ese género
-db.media.find({ genre_ids: "${fav._id}" }, ${CARD_PROJ})
-  .sort({ "rating.avg": -1 })
-  .limit(12)`,
-    why: "genre_ids es un array, así que el índice es multikey: { genre_ids: 1, \"rating.avg\": -1 } sirve para filtrar por cualquier género y devolver ya ordenado.",
-    docs: () => [{ _id: ME._id, favorite_genre_ids: ME.favorite_genre_ids }] }).attr}>
-    <div class="section-head"><h2 class="section-title">Porque te gusta ${esc(fav.name)}</h2><a class="link-more" href="genero.html?id=${fav._id}">Ver todo</a></div>
-    <div class="row">${byFav.map((m) => mediaCard(m)).join("")}</div>
+  <section class="section" ${aFav.attr}>
+    <div class="section-head"><h2 class="section-title">Porque te gusta ${esc(H.because_you_like.genre_name)}</h2><a class="link-more" href="genero.html?id=${H.because_you_like.genre_id}">Ver todo</a></div>
+    <div class="row">${H.because_you_like.items.map((c) => mediaCard(asMedia(c))).join("")}</div>
   </section>
 
-  <section class="section" ${ann({ col: "media", title: "Series para maratonear", short: `find({ type: "series" }).sort({ "rating.avg": -1 })`,
-    q: `db.media.find({ type: "series" }, ${CARD_PROJ})
-  .sort({ "rating.avg": -1 })
-  .limit(12)`,
-    why: "Patrón polimórfico: películas y series conviven en la misma colección y se distinguen por el campo type. Solo los documentos de series tienen el array seasons.",
-    docs: () => [series[0]] }).attr}>
+  <section class="section" ${aSeries.attr}>
     <div class="section-head"><h2 class="section-title">Series para maratonear</h2><a class="link-more" href="genero.html?type=series">Ver todo</a></div>
-    <div class="row">${series.map((m) => mediaCard(m, { sub: `${m.seasons.length} temp. · ${m.release_year}` })).join("")}</div>
+    <div class="row">${H.series.map((c) => mediaCard(asMedia(c), { sub: `${c.seasons_count} temp. · ${c.release_year}` })).join("")}</div>
   </section>
 
-  <section class="section" ${ann({ col: "genres", title: "Explorar por género", short: "find().sort({ name: 1 })",
-    q: `db.genres.find().sort({ name: 1 })`,
-    why: "La colección genres alimenta esta grilla y también los chips de toda la app. Cada documento tiene nombre, descripción y color.",
-    docs: () => DB.genres, docsLabel: "Documentos de genres", maxDocs: 2 }).attr}>
+  <section class="section" ${aGenres.attr}>
     <div class="section-head"><h2 class="section-title">Explorar por género</h2></div>
-    <div class="genre-grid">${DB.genres.map((g) => `<a class="genre-tile" href="genero.html?id=${g._id}" style="--g:${g.color}">${esc(g.name)}</a>`).join("")}</div>
+    <div class="genre-grid">${H.genres.map((g) => `<a class="genre-tile" href="genero.html?id=${g._id}" style="--g:${g.color}">${esc(g.name)}</a>`).join("")}</div>
   </section>`;
 
   app.querySelector("[data-toggle-list]").onclick = (e) => {

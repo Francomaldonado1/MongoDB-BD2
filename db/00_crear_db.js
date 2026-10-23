@@ -1,7 +1,7 @@
 // =============================================================================
 // 00 · Creación de la base de datos y las colecciones
 //
-// Borra la base "fotograma" (si existe) y crea las 6 colecciones de forma
+// Borra la base "fotograma" (si existe) y crea las 7 colecciones de forma
 // explícita. Crearlas explícitamente (en vez de dejar que se creen al primer
 // insert) permite:
 //   - definir reglas de validación ($jsonSchema) para cada colección
@@ -213,6 +213,55 @@ db.createCollection("views", validacion({
   },
 }));
 paso("views");
+
+// -----------------------------------------------------------------------------
+// home — pantalla de Inicio precalculada: un documento por usuario (_id = user_id)
+// con todo lo que muestra el Inicio. Se arma en 05_home.js.
+// -----------------------------------------------------------------------------
+const tarjeta = (extraRequeridos = [], extraProps = {}) => ({
+  bsonType: "object",
+  required: ["media_id", "title", "type", ...extraRequeridos],
+  properties: {
+    media_id: { bsonType: "objectId" },
+    title: texto(),
+    type: { enum: ["movie", "series"] },
+    poster: { bsonType: "string" },
+    release_year: numero(1888, 2100),
+    rating_avg: numero(0, 10),
+    seasons_count: numero(1, 100),
+    ...extraProps,
+  },
+});
+const lista = (items) => ({ bsonType: "array", items });
+
+db.createCollection("home", validacion({
+  bsonType: "object",
+  required: ["generated_at", "user", "hero", "continue_watching", "top10", "recent", "series", "genres"],
+  properties: {
+    generated_at: { bsonType: "date" },
+    user: {
+      bsonType: "object",
+      required: ["username", "favorite_genre_ids"],
+      properties: { username: texto(), avatar: { bsonType: "string" }, favorite_genre_ids: { bsonType: "array", items: { bsonType: "string" } } },
+    },
+    hero: tarjeta(["plot", "genre_ids"], { plot: texto(), genre_ids: { bsonType: "array", items: { bsonType: "string" } }, backdrop: { bsonType: "string" }, runtime_min: numero(1, 1000) }),
+    continue_watching: lista(tarjeta(["minutes", "progress"], {
+      minutes: numero(0, 1000),
+      progress: numero(0, 100),
+      episode: { bsonType: "object", required: ["season", "number"], properties: { season: numero(1, 100), number: numero(1, 1000), title: texto() } },
+    })),
+    top10: lista(tarjeta(["views"], { views: { bsonType: "number", minimum: 1 } })),
+    recent: lista(tarjeta()),
+    series: lista(tarjeta()),
+    because_you_like: {
+      bsonType: "object",
+      required: ["genre_id", "genre_name", "items"],
+      properties: { genre_id: texto(), genre_name: texto(), items: lista(tarjeta()) },
+    },
+    genres: lista({ bsonType: "object", required: ["_id", "name", "color"], properties: { _id: texto(), name: texto(), color: texto() } }),
+  },
+}));
+paso("home");
 
 print(`\n  Colecciones creadas: ${db.getCollectionNames().filter((c) => !c.startsWith("system.")).sort().join(", ")}`);
 }

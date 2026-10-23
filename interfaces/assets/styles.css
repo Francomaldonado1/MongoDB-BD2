@@ -22,6 +22,7 @@
   --c-genres: #b072ff;
   --c-people: #ff6a3d;
   --c-views: #2bd4e0;
+  --c-home: #ff4fa3;
 
   --radius: 10px;
   --radius-lg: 18px;
@@ -412,6 +413,7 @@ body.model .q-tag {
 [data-col="genres"]  { --cc: var(--c-genres); }
 [data-col="people"]  { --cc: var(--c-people); }
 [data-col="views"]   { --cc: var(--c-views); }
+[data-col="home"]    { --cc: var(--c-home); }
 
 .drawer-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .55); opacity: 0; pointer-events: none; transition: opacity .2s; }
 .drawer {

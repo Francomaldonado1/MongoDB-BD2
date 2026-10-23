@@ -166,3 +166,24 @@ db.views.find({ user_id: ObjectId("665f0c000000000000000001"), started_at: { $gt
   .sort({ started_at: -1 })
   .explain("executionStats")                                                                      // 5.3
 ```
+
+---
+
+## 6. La pantalla de Inicio: varias consultas vs la colección `home`
+
+Los índices aceleran **una** consulta. Pero el Inicio arma la pantalla con **9 consultas** a 4 colecciones (usuario, hero, géneros, top 10, seguir viendo, sus títulos, recién agregadas, recomendadas y series), y el tiempo de la pantalla es la suma de todas. La colección `home` ([`colecciones.md`](colecciones.md#7-home)) guarda la pantalla ya armada para cada usuario y se lee con una sola consulta:
+
+```js
+db.home.findOne({ _id: ObjectId("665f0c000000000000000001") })     // el Inicio completo de CineFan88
+```
+
+Se mide el tiempo total de la pantalla (promedio de 20 ejecuciones, con el mismo usuario), con `mongosh rendimiento/home.js`:
+
+| Pantalla de Inicio | Consultas | Tiempo promedio |
+|---|---|---|
+| Sin `home` (hero, géneros, top 10, seguir viendo, recientes, recomendadas, series) | 9 | 514,5 ms |
+| Con `home` (`db.home.findOne({ _id })`) | 1 | 3,7 ms |
+
+- **Con los índices ya creados**, armar el Inicio sigue costando ≈ 0,5 s. La parte más pesada es el Top 10: el `$group` tiene que contar todas las reproducciones de la semana en `views`.
+- `home` es unas 140 veces más rápida, porque ese trabajo se hizo **antes**, al armar el documento (`db/05_home.js`), y no cada vez que un usuario abre la aplicación.
+- **Costo:** `home` ocupa ≈ 97 MB (≈ 10 KB por usuario) y tarda ≈ 78 s en armarse para los 10.006 usuarios. Es una copia: queda atrasada hasta que se regenera.

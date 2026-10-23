@@ -1,12 +1,14 @@
 // =============================================================================
-// 05 · Verificación de la base
+// 06 · Verificación de la base
 //
 //  1. Cantidad de documentos y espacio en disco por colección
 //  2. Las reglas de validación rechazan documentos inválidos
 //  3. Integridad de las referencias (MongoDB no tiene claves foráneas:
 //     se controla con $lookup y con búsquedas $in)
+//  4. La colección home tiene un documento por usuario y coincide con las
+//     colecciones de origen
 //
-// Uso:  mongosh db/05_verificar.js
+// Uso:  mongosh db/06_verificar.js
 // =============================================================================
 
 if (typeof CONFIG === "undefined") load(__dirname + "/config.js");
@@ -23,7 +25,7 @@ const mb = (b) => `${(b / 1024 / 1024).toFixed(1)} MB`;
 // -----------------------------------------------------------------------------
 titulo("1. Volumen");
 print(`    ${"colección".padEnd(10)}${"documentos".padStart(12)}${"datos".padStart(11)}${"en disco".padStart(11)}${"índices".padStart(11)}`);
-for (const c of ["genres", "people", "media", "users", "reviews", "views"]) {
+for (const c of ["genres", "people", "media", "users", "reviews", "views", "home"]) {
   const s = db.getCollection(c).aggregate([{ $collStats: { storageStats: {} } }]).toArray()[0].storageStats;
   const docs = db.getCollection(c).estimatedDocumentCount();
   print(`    ${c.padEnd(10)}${fmt(docs).padStart(12)}${mb(s.size).padStart(11)}${mb(s.storageSize).padStart(11)}${mb(s.totalIndexSize).padStart(11)}`);
@@ -54,6 +56,10 @@ debeFallar("tarjeta con número completo", () => db.users.updateOne({ _id: unUsu
 debeFallar("reseña duplicada (índice único)", () => {
   const r = db.reviews.findOne();
   db.reviews.insertOne({ ...r, _id: new ObjectId() });
+});
+debeFallar("home sin la sección top10", () => {
+  const { top10, ...sinTop } = db.home.findOne();
+  db.home.insertOne({ ...sinTop, _id: new ObjectId() });
 });
 
 // -----------------------------------------------------------------------------
@@ -109,4 +115,28 @@ for (const m of muestra) {
   if (Math.round(real.avg * 10) / 10 === m.rating.avg && real.count === m.rating.count) ratingsOk++;
 }
 print(`    ${ratingsOk === muestra.length ? "✓" : "✗"} media.rating coincide con reviews (${ratingsOk}/${muestra.length} títulos de muestra)`);
+
+// -----------------------------------------------------------------------------
+titulo("4. Colección home");
+const usuarios = db.users.countDocuments();
+const homes = db.home.countDocuments();
+print(`    ${homes === usuarios ? "✓" : "✗"} un documento por usuario: ${fmt(homes)} home / ${fmt(usuarios)} users`);
+
+// Cada card de home apunta a un título que existe
+const titulosHome = new Map();
+for (const h of db.home.find({}, { hero: 1, top10: 1, recent: 1, series: 1 }).limit(200).toArray()) {
+  for (const c of [h.hero, ...h.top10, ...h.recent, ...h.series]) titulosHome.set(c.media_id.toString(), c.media_id);
+}
+revisar("home → media (muestra de 200 documentos)", faltantes(titulosHome, "media"));
+
+// El Top 10 de home coincide con el cálculo directo sobre views
+const directo = db.views.aggregate([
+  { $match: { started_at: { $gte: new Date(CONFIG.hoy.getTime() - 7 * 24 * 3600 * 1000) } } },
+  { $group: { _id: "$media_id", views: { $sum: 1 } } },
+  { $sort: { views: -1 } },
+  { $limit: 10 },
+]).toArray();
+const enHome = db.home.findOne({}).top10;
+const mismoTop = directo.length === enHome.length && directo.every((d, i) => d._id.equals(enHome[i].media_id) && d.views === enHome[i].views);
+print(`    ${mismoTop ? "✓" : "✗"} home.top10 coincide con el $group sobre views`);
 }
